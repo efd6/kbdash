@@ -634,12 +634,13 @@ func extractEmbeddableFilters(pi *PanelInfo, raw json.RawMessage) {
 func describeRawFilter(raw json.RawMessage) string {
 	var f struct {
 		Meta struct {
-			Alias  *string         `json:"alias"`
-			Field  string          `json:"field"`
-			Key    string          `json:"key"`
-			Negate bool            `json:"negate"`
-			Type   string          `json:"type"`
-			Params json.RawMessage `json:"params"`
+			Alias    *string         `json:"alias"`
+			Field    string          `json:"field"`
+			Key      string          `json:"key"`
+			Negate   bool            `json:"negate"`
+			Type     string          `json:"type"`
+			Relation string          `json:"relation"`
+			Params   json.RawMessage `json:"params"`
 		} `json:"meta"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
@@ -673,6 +674,22 @@ func describeRawFilter(raw json.RawMessage) string {
 	case "combined":
 		if f.Meta.Alias != nil && *f.Meta.Alias != "" {
 			return fmt.Sprintf("%s%s", neg, *f.Meta.Alias)
+		}
+		var subFilters []json.RawMessage
+		if json.Unmarshal(f.Meta.Params, &subFilters) == nil && len(subFilters) > 0 {
+			relation := strings.ToUpper(f.Meta.Relation)
+			if relation == "" {
+				relation = "AND"
+			}
+			var parts []string
+			for _, sf := range subFilters {
+				if desc := describeRawFilter(sf); desc != "" {
+					parts = append(parts, desc)
+				}
+			}
+			if len(parts) > 0 {
+				return neg + "(" + strings.Join(parts, " "+relation+" ") + ")"
+			}
 		}
 		return neg + "combined filter"
 	case "custom":
