@@ -20,6 +20,40 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Render: kbdash -dot pkg/ | neato -n -Tsvg -o wireframe.svg\n")
 		fmt.Fprintf(os.Stderr, "  View:   kbdash -xdot pkg/\n\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, `
+Warnings ([!] lines):
+
+  Lines prefixed with [!] flag potential issues in the dashboard JSON.
+
+  Consistency checks — Kibana stores some fields redundantly. These
+  warnings fire when the copies diverge, which can happen when files
+  are hand-edited instead of exported through the Kibana UI:
+
+    title mismatch          Panel title differs from the inner Lens
+                            attribute title.
+    ES|QL query mismatch    The ES|QL query stored at the datasource,
+                            Lens state, and panel levels are not identical.
+    KQL query mismatch      The KQL query at the Lens state level differs
+                            from the panel-level query. Only reported when
+                            both are non-empty.
+
+  Incomplete extraction — some information could not be fully described:
+
+    ES|QL datasource        Panel uses ES|QL; field information is embedded
+                            in the query string and not extracted.
+    definition not inlined  Saved search panel references an external
+                            object not present in the dashboard file.
+    map layers not parsed   Map layer structure was not fully understood.
+
+  Parse errors — structural problems reading the JSON:
+
+    parse error             A panel's embeddable config, Lens state, or
+                            filter could not be decoded.
+    unknown panel type      Panel type not recognised. The panel is still
+                            listed but details are not extracted.
+    reference not resolved  A saved search reference ID could not be
+                            matched in the dashboard's references array.
+`)
 	}
 	flag.Parse()
 
