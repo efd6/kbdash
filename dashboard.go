@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -624,14 +625,7 @@ func extractEmbeddableFilters(pi *PanelInfo, raw json.RawMessage) {
 		if desc == "" {
 			continue
 		}
-		dup := false
-		for _, existing := range pi.Filters {
-			if existing == desc {
-				dup = true
-				break
-			}
-		}
-		if !dup {
+		if !slices.Contains(pi.Filters, desc) {
 			pi.Filters = append(pi.Filters, desc)
 		}
 	}
