@@ -81,9 +81,16 @@ type GridData struct {
 
 type LensEmbeddable struct {
 	Attributes struct {
+		Title             string          `json:"title"`
 		VisualizationType string          `json:"visualizationType"`
 		State             json.RawMessage `json:"state"`
 	} `json:"attributes"`
+}
+
+type FlexQuery struct {
+	Language string `json:"language"`
+	Query    string `json:"query"`
+	ESQL     string `json:"esql"`
 }
 
 type LensState struct {
@@ -93,6 +100,7 @@ type LensState struct {
 		TextBased    *TextBasedDS `json:"textBased,omitempty"`
 	} `json:"datasourceStates"`
 	Filters       json.RawMessage `json:"filters,omitempty"`
+	Query         *FlexQuery      `json:"query,omitempty"`
 	Visualization json.RawMessage `json:"visualization,omitempty"`
 }
 
@@ -352,7 +360,7 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 
 	switch p.Type {
 	case "lens":
-		extractLens(&pi, p.EmbeddableConfig)
+		extractLens(&pi, p)
 	case "links":
 		extractLinks(&pi, p.EmbeddableConfig, p.PanelIndex, refs)
 	case "visualization":
@@ -369,13 +377,27 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 	return pi
 }
 
-func extractLens(pi *PanelInfo, raw json.RawMessage) {
+func extractLens(pi *PanelInfo, p Panel) {
 	var le LensEmbeddable
-	if err := json.Unmarshal(raw, &le); err != nil {
+	if err := json.Unmarshal(p.EmbeddableConfig, &le); err != nil {
 		pi.Warnings = append(pi.Warnings, fmt.Sprintf("lens parse error: %v", err))
 		return
 	}
 	pi.SubType = le.Attributes.VisualizationType
+
+	// Title consistency: panel-level title vs lens attribute title.
+	if p.Title != "" && le.Attributes.Title != "" && p.Title != le.Attributes.Title {
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs lens %q", p.Title, le.Attributes.Title))
+	}
+
+	// Extract panel-level query (embeddableConfig.query).
+	var ec struct {
+		Query *FlexQuery `json:"query"`
+	}
+	if err := json.Unmarshal(p.EmbeddableConfig, &ec); err != nil {
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("embeddableConfig query parse error: %v", err))
+	}
+
 	if len(le.Attributes.State) == 0 {
 		return
 	}
@@ -412,13 +434,51 @@ func extractLens(pi *PanelInfo, raw json.RawMessage) {
 		}
 	}
 
+	// ES|QL consistency: compare datasource, state, and panel copies.
 	if state.DatasourceStates.TextBased != nil {
+		hasESQL := false
+		queries := make(map[string][]string) // query text -> locations
 		for _, raw := range state.DatasourceStates.TextBased.Layers {
-			if len(raw) > 2 {
-				pi.Warnings = append(pi.Warnings, "non-empty textBased/ESQL datasource (not parsed)")
-				break
+			var layer struct {
+				Query struct {
+					ESQL string `json:"esql"`
+				} `json:"query"`
+			}
+			if json.Unmarshal(raw, &layer) == nil && layer.Query.ESQL != "" {
+				hasESQL = true
+				queries[layer.Query.ESQL] = append(queries[layer.Query.ESQL], "datasource")
 			}
 		}
+		if state.Query != nil && state.Query.ESQL != "" {
+			hasESQL = true
+			queries[state.Query.ESQL] = append(queries[state.Query.ESQL], "state")
+		}
+		if ec.Query != nil && ec.Query.ESQL != "" {
+			hasESQL = true
+			queries[ec.Query.ESQL] = append(queries[ec.Query.ESQL], "panel")
+		}
+		if len(queries) > 1 {
+			pi.Warnings = append(pi.Warnings, "ES|QL query mismatch: datasource, state, and panel copies differ")
+		}
+		if hasESQL && len(pi.Layers) == 0 {
+			pi.Warnings = append(pi.Warnings, "ES|QL datasource (fields not extracted)")
+		}
+	}
+
+	// KQL consistency: state-level query vs panel-level query.
+	// Only flag when both are non-empty and different. An empty
+	// panel-level query is normal — it means the dashboard doesn't
+	// override the Lens visualization's built-in query.
+	stateKQL := ""
+	if state.Query != nil && state.Query.Language == "kuery" {
+		stateKQL = state.Query.Query
+	}
+	panelKQL := ""
+	if ec.Query != nil && ec.Query.Language == "kuery" {
+		panelKQL = ec.Query.Query
+	}
+	if stateKQL != "" && panelKQL != "" && stateKQL != panelKQL {
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("KQL query mismatch: state %q vs panel %q", stateKQL, panelKQL))
 	}
 
 	if pi.SubType == "lnsXY" && len(state.Visualization) > 0 {
