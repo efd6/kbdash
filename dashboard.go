@@ -634,12 +634,12 @@ func extractEmbeddableFilters(pi *PanelInfo, raw json.RawMessage) {
 func describeRawFilter(raw json.RawMessage) string {
 	var f struct {
 		Meta struct {
-			Field  string `json:"field"`
-			Key    string `json:"key"`
-			Negate bool   `json:"negate"`
-			Params struct {
-				Query any `json:"query"`
-			} `json:"params"`
+			Alias  *string         `json:"alias"`
+			Field  string          `json:"field"`
+			Key    string          `json:"key"`
+			Negate bool            `json:"negate"`
+			Type   string          `json:"type"`
+			Params json.RawMessage `json:"params"`
 		} `json:"meta"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
@@ -649,14 +649,51 @@ func describeRawFilter(raw json.RawMessage) string {
 	if field == "" {
 		field = f.Meta.Key
 	}
-	if field == "" {
-		return ""
-	}
-	op := "="
+
+	neg := ""
 	if f.Meta.Negate {
-		op = "!="
+		neg = "NOT "
 	}
-	return fmt.Sprintf("%s %s %v", field, op, f.Meta.Params.Query)
+
+	switch f.Meta.Type {
+	case "exists":
+		if field == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s%s exists", neg, field)
+	case "phrases":
+		var values []string
+		if json.Unmarshal(f.Meta.Params, &values) == nil {
+			return fmt.Sprintf("%s%s IN (%s)", neg, field, strings.Join(values, ", "))
+		}
+		if field == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s%s phrases (details not extracted)", neg, field)
+	case "combined":
+		if f.Meta.Alias != nil && *f.Meta.Alias != "" {
+			return fmt.Sprintf("%s%s", neg, *f.Meta.Alias)
+		}
+		return neg + "combined filter"
+	case "custom":
+		if f.Meta.Alias != nil && *f.Meta.Alias != "" {
+			return fmt.Sprintf("%s%s", neg, *f.Meta.Alias)
+		}
+		return neg + "custom filter"
+	default:
+		if field == "" {
+			return ""
+		}
+		var params struct {
+			Query any `json:"query"`
+		}
+		_ = json.Unmarshal(f.Meta.Params, &params)
+		op := "="
+		if f.Meta.Negate {
+			op = "!="
+		}
+		return fmt.Sprintf("%s %s %v", field, op, params.Query)
+	}
 }
 
 func truncate(s string, n int) string {
