@@ -114,16 +114,23 @@ type TextBasedDS struct {
 }
 
 type FormBasedLayer struct {
-	ColumnOrder []string          `json:"columnOrder"`
-	Columns     map[string]Column `json:"columns"`
+	ColumnOrder         []string          `json:"columnOrder"`
+	Columns             map[string]Column `json:"columns"`
+	IgnoreGlobalFilters bool              `json:"ignoreGlobalFilters,omitempty"`
 }
 
 type Column struct {
-	Label         string `json:"label"`
-	SourceField   string `json:"sourceField"`
-	OperationType string `json:"operationType"`
-	DataType      string `json:"dataType"`
-	CustomLabel   bool   `json:"customLabel"`
+	Label         string       `json:"label"`
+	SourceField   string       `json:"sourceField"`
+	OperationType string       `json:"operationType"`
+	DataType      string       `json:"dataType"`
+	CustomLabel   bool         `json:"customLabel"`
+	Params        ColumnParams `json:"params"`
+}
+
+type ColumnParams struct {
+	Formula         string   `json:"formula,omitempty"`
+	SecondaryFields []string `json:"secondaryFields,omitempty"`
 }
 
 type XYVisualization struct {
@@ -184,6 +191,7 @@ type ControlInfo struct {
 
 type PanelInfo struct {
 	Title           string
+	HiddenTitle     bool
 	Type            string
 	SubType         string
 	SeriesType      string
@@ -198,13 +206,16 @@ type PanelInfo struct {
 }
 
 type LayerInfo struct {
-	Columns []ColumnInfo
+	Columns             []ColumnInfo
+	IgnoreGlobalFilters bool
 }
 
 type ColumnInfo struct {
-	Label         string
-	SourceField   string
-	OperationType string
+	Label           string
+	SourceField     string
+	SecondaryFields []string
+	OperationType   string
+	Formula         string
 }
 
 type LinkInfo struct {
@@ -359,6 +370,26 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 		PanelIndex: p.PanelIndex,
 	}
 
+	// Newer Kibana exports place the panel display title and the
+	// hidden-title flag inside embeddableConfig rather than at the
+	// top level.
+	var ec struct {
+		Title           string `json:"title"`
+		HidePanelTitles *bool  `json:"hidePanelTitles,omitempty"`
+	}
+	if json.Unmarshal(p.EmbeddableConfig, &ec) == nil {
+		if ec.Title != "" {
+			if pi.Title == "" {
+				pi.Title = ec.Title
+			} else if pi.Title != ec.Title {
+				pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs embeddableConfig %q", pi.Title, ec.Title))
+			}
+		}
+		if ec.HidePanelTitles != nil && *ec.HidePanelTitles {
+			pi.HiddenTitle = true
+		}
+	}
+
 	switch p.Type {
 	case "lens":
 		extractLens(&pi, p)
@@ -386,9 +417,9 @@ func extractLens(pi *PanelInfo, p Panel) {
 	}
 	pi.SubType = le.Attributes.VisualizationType
 
-	// Title consistency: panel-level title vs lens attribute title.
-	if p.Title != "" && le.Attributes.Title != "" && p.Title != le.Attributes.Title {
-		pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs lens %q", p.Title, le.Attributes.Title))
+	// Title consistency: effective panel title vs lens attribute title.
+	if pi.Title != "" && le.Attributes.Title != "" && pi.Title != le.Attributes.Title {
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs lens %q", pi.Title, le.Attributes.Title))
 	}
 
 	// Extract panel-level query (embeddableConfig.query).
@@ -417,17 +448,22 @@ func extractLens(pi *PanelInfo, p Panel) {
 	}
 	if ds != nil {
 		for _, layer := range ds.Layers {
-			var li LayerInfo
+			li := LayerInfo{
+				IgnoreGlobalFilters: layer.IgnoreGlobalFilters,
+			}
 			for _, colID := range layer.ColumnOrder {
 				col, ok := layer.Columns[colID]
 				if !ok {
 					continue
 				}
-				li.Columns = append(li.Columns, ColumnInfo{
-					Label:         col.Label,
-					SourceField:   col.SourceField,
-					OperationType: col.OperationType,
-				})
+				ci := ColumnInfo{
+					Label:           col.Label,
+					SourceField:     col.SourceField,
+					SecondaryFields: col.Params.SecondaryFields,
+					OperationType:   col.OperationType,
+					Formula:         col.Params.Formula,
+				}
+				li.Columns = append(li.Columns, ci)
 			}
 			if len(li.Columns) > 0 {
 				pi.Layers = append(pi.Layers, li)
@@ -559,6 +595,16 @@ func extractSearch(pi *PanelInfo, p Panel, refs []Reference) {
 				pi.RefID = r.ID
 				break
 			}
+		}
+	}
+	// Newer exports store the saved object ID directly in
+	// embeddableConfig.savedObjectId.
+	if pi.RefID == "" {
+		var ec struct {
+			SavedObjectID string `json:"savedObjectId"`
+		}
+		if json.Unmarshal(p.EmbeddableConfig, &ec) == nil && ec.SavedObjectID != "" {
+			pi.RefID = ec.SavedObjectID
 		}
 	}
 	if pi.RefID != "" {

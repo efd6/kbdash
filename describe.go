@@ -58,9 +58,13 @@ func describePanel(w io.Writer, p PanelInfo) {
 	if title == "" {
 		title = "(untitled)"
 	}
-	fmt.Fprintf(w, "  [%d,%d %dx%d] %q (%s)\n",
+	hidden := ""
+	if p.HiddenTitle {
+		hidden = " [hidden]"
+	}
+	fmt.Fprintf(w, "  [%d,%d %dx%d] %q%s (%s)\n",
 		p.GridData.X, p.GridData.Y, p.GridData.W, p.GridData.H,
-		title, panelTypeString(p))
+		title, hidden, panelTypeString(p))
 
 	for _, link := range p.Links {
 		fmt.Fprintf(w, "    Link: %s (%s)\n", link.Label, link.Type)
@@ -69,12 +73,22 @@ func describePanel(w io.Writer, p PanelInfo) {
 	for i, layer := range p.Layers {
 		var cols []string
 		for _, c := range layer.Columns {
-			cols = append(cols, fmt.Sprintf("%s (%s)", c.SourceField, c.OperationType))
+			field := c.SourceField
+			if len(c.SecondaryFields) > 0 {
+				field += "+" + strings.Join(c.SecondaryFields, "+")
+			}
+			if c.Formula != "" {
+				field = truncate(c.Formula, 60)
+			}
+			cols = append(cols, fmt.Sprintf("%s (%s)", field, c.OperationType))
 		}
+		prefix := "    Fields: "
 		if len(p.Layers) > 1 {
-			fmt.Fprintf(w, "    Layer %d: %s\n", i+1, strings.Join(cols, ", "))
-		} else {
-			fmt.Fprintf(w, "    Fields: %s\n", strings.Join(cols, ", "))
+			prefix = fmt.Sprintf("    Layer %d: ", i+1)
+		}
+		fmt.Fprintf(w, "%s%s\n", prefix, strings.Join(cols, ", "))
+		if layer.IgnoreGlobalFilters {
+			fmt.Fprintf(w, "%s[ignores global filters]\n", strings.Repeat(" ", len(prefix)))
 		}
 	}
 

@@ -29,8 +29,9 @@ Warnings ([!] lines):
   warnings fire when the copies diverge, which can happen when files
   are hand-edited instead of exported through the Kibana UI:
 
-    title mismatch          Panel title differs from the inner Lens
-                            attribute title.
+    title mismatch          Panel title (from top-level or embeddableConfig)
+                            differs from the inner Lens attribute title,
+                            or the two panel-title locations disagree.
     ES|QL query mismatch    The ES|QL query stored at the datasource,
                             Lens state, and panel levels are not identical.
     KQL query mismatch      The KQL query at the Lens state level differs

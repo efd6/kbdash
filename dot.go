@@ -169,18 +169,31 @@ func dotNodeLabel(p PanelInfo) string {
 	if title == "" {
 		title = "(untitled)"
 	}
+	if p.HiddenTitle {
+		title += " [hidden]"
+	}
 	lines = append(lines, title)
 	lines = append(lines, panelTypeString(p))
 
 	var fieldCount int
 	for _, layer := range p.Layers {
+		if layer.IgnoreGlobalFilters {
+			lines = append(lines, "[ignores global filters]")
+		}
 		for _, c := range layer.Columns {
 			if c.SourceField == "___records___" || c.SourceField == "Records" {
 				continue
 			}
 			fieldCount++
 			if fieldCount <= maxFields {
-				lines = append(lines, c.SourceField+" ("+c.OperationType+")")
+				field := c.SourceField
+				if len(c.SecondaryFields) > 0 {
+					field += "+" + strings.Join(c.SecondaryFields, "+")
+				}
+				if c.Formula != "" {
+					field = truncate(c.Formula, 40)
+				}
+				lines = append(lines, field+" ("+c.OperationType+")")
 			}
 		}
 	}
