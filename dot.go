@@ -193,7 +193,11 @@ func dotNodeLabel(p PanelInfo) string {
 				if c.Formula != "" {
 					field = truncate(c.Formula, 40)
 				}
-				lines = append(lines, field+" ("+c.OperationType+")")
+				if c.OperationType != "" {
+					lines = append(lines, field+" ("+c.OperationType+")")
+				} else {
+					lines = append(lines, field)
+				}
 			}
 		}
 	}

@@ -583,6 +583,13 @@ func extractVisualization(pi *PanelInfo, raw json.RawMessage) {
 }
 
 func extractSearch(pi *PanelInfo, p Panel, refs []Reference) {
+	// Try by-value first: the search definition is inlined in
+	// embeddableConfig.attributes.
+	if extractInlineSearch(pi, p.EmbeddableConfig) {
+		return
+	}
+
+	// Fall back to by-reference resolution.
 	for _, r := range refs {
 		if r.Name == p.PanelIndex+":"+p.PanelRefName {
 			pi.RefID = r.ID
@@ -612,6 +619,44 @@ func extractSearch(pi *PanelInfo, p Panel, refs []Reference) {
 	} else {
 		pi.Warnings = append(pi.Warnings, "saved search reference could not be resolved")
 	}
+}
+
+// extractInlineSearch handles by-value search panels where the full
+// definition is embedded in embeddableConfig.attributes.
+func extractInlineSearch(pi *PanelInfo, raw json.RawMessage) bool {
+	var ec struct {
+		Attributes struct {
+			Columns    []string   `json:"columns"`
+			KibanaMeta KibanaMeta `json:"kibanaSavedObjectMeta"`
+		} `json:"attributes"`
+	}
+	if err := json.Unmarshal(raw, &ec); err != nil || len(ec.Attributes.Columns) == 0 {
+		return false
+	}
+
+	pi.Layers = append(pi.Layers, LayerInfo{
+		Columns: searchColumns(ec.Attributes.Columns),
+	})
+
+	if len(ec.Attributes.KibanaMeta.SearchSourceRaw) > 0 {
+		ss, err := decodeStringOrObject[SearchSource](ec.Attributes.KibanaMeta.SearchSourceRaw)
+		if err == nil {
+			for _, f := range ss.Filter {
+				if desc := describeRawFilter(f); desc != "" {
+					pi.Filters = append(pi.Filters, desc)
+				}
+			}
+		}
+	}
+	return true
+}
+
+func searchColumns(cols []string) []ColumnInfo {
+	out := make([]ColumnInfo, len(cols))
+	for i, c := range cols {
+		out[i] = ColumnInfo{SourceField: c}
+	}
+	return out
 }
 
 func extractMap(pi *PanelInfo, raw json.RawMessage) {
