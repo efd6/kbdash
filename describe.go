@@ -80,11 +80,14 @@ func describePanel(w io.Writer, p PanelInfo) {
 			if c.Formula != "" {
 				field = truncate(c.Formula, 60)
 			}
+			desc := field
 			if c.OperationType != "" {
-				cols = append(cols, fmt.Sprintf("%s (%s)", field, c.OperationType))
-			} else {
-				cols = append(cols, field)
+				desc = fmt.Sprintf("%s (%s)", field, c.OperationType)
 			}
+			if c.Filter != "" {
+				desc += fmt.Sprintf(" [where %s]", c.Filter)
+			}
+			cols = append(cols, desc)
 		}
 		prefix := "    Fields: "
 		if len(p.Layers) > 1 {

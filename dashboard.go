@@ -25,11 +25,11 @@ type Reference struct {
 }
 
 type Attributes struct {
-	Title             string          `json:"title"`
-	Description       string          `json:"description"`
-	PanelsJSON        []Panel         `json:"panelsJSON"`
-	ControlGroupInput *ControlGroup   `json:"controlGroupInput,omitempty"`
-	KibanaMeta        KibanaMeta      `json:"kibanaSavedObjectMeta"`
+	Title             string        `json:"title"`
+	Description       string        `json:"description"`
+	PanelsJSON        []Panel       `json:"panelsJSON"`
+	ControlGroupInput *ControlGroup `json:"controlGroupInput,omitempty"`
+	KibanaMeta        KibanaMeta    `json:"kibanaSavedObjectMeta"`
 }
 
 type KibanaMeta struct {
@@ -125,6 +125,7 @@ type Column struct {
 	OperationType string       `json:"operationType"`
 	DataType      string       `json:"dataType"`
 	CustomLabel   bool         `json:"customLabel"`
+	Filter        *FlexQuery   `json:"filter,omitempty"`
 	Params        ColumnParams `json:"params"`
 }
 
@@ -216,6 +217,7 @@ type ColumnInfo struct {
 	SecondaryFields []string
 	OperationType   string
 	Formula         string
+	Filter          string
 }
 
 type LinkInfo struct {
@@ -462,6 +464,13 @@ func extractLens(pi *PanelInfo, p Panel) {
 					SecondaryFields: col.Params.SecondaryFields,
 					OperationType:   col.OperationType,
 					Formula:         col.Params.Formula,
+				}
+				if col.Filter != nil {
+					q := col.Filter.Query
+					if q == "" {
+						q = col.Filter.ESQL
+					}
+					ci.Filter = q
 				}
 				li.Columns = append(li.Columns, ci)
 			}
