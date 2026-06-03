@@ -393,13 +393,13 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 	}
 
 	switch p.Type {
-	case "lens":
+	case "lens", "vis":
 		extractLens(&pi, p)
 	case "links":
 		extractLinks(&pi, p.EmbeddableConfig, p.PanelIndex, refs)
-	case "visualization":
+	case "visualization", "legacy_vis":
 		extractVisualization(&pi, p.EmbeddableConfig)
-	case "search":
+	case "search", "discover_session":
 		extractSearch(&pi, p, refs)
 	case "map":
 		extractMap(&pi, p.EmbeddableConfig)
@@ -823,13 +823,13 @@ func truncate(s string, n int) string {
 
 func panelTypeString(p PanelInfo) string {
 	switch p.Type {
-	case "lens":
+	case "lens", "vis":
 		s := "lens: " + p.SubType
 		if p.SeriesType != "" {
 			s += ", " + p.SeriesType
 		}
 		return s
-	case "visualization":
+	case "visualization", "legacy_vis":
 		if p.SubType != "" {
 			return "visualization: " + p.SubType
 		}

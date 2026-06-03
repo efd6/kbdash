@@ -151,9 +151,9 @@ func panelFill(p PanelInfo) string {
 	switch p.Type {
 	case "links":
 		return `"#ffffcc"`
-	case "visualization":
+	case "visualization", "legacy_vis":
 		return `"#e8f5e9"`
-	case "search":
+	case "search", "discover_session":
 		return `"#e3f2fd"`
 	case "map":
 		return `"#fff3e0"`
