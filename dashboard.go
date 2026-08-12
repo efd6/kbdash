@@ -420,8 +420,12 @@ func extractLens(pi *PanelInfo, p Panel) {
 	pi.SubType = le.Attributes.VisualizationType
 
 	// Title consistency: effective panel title vs lens attribute title.
-	if pi.Title != "" && le.Attributes.Title != "" && pi.Title != le.Attributes.Title {
-		pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs lens %q", pi.Title, le.Attributes.Title))
+	if le.Attributes.Title != "" {
+		if pi.Title == "" {
+			pi.Title = le.Attributes.Title
+		} else if pi.Title != le.Attributes.Title {
+			pi.Warnings = append(pi.Warnings, fmt.Sprintf("title mismatch: panel %q vs lens %q", pi.Title, le.Attributes.Title))
+		}
 	}
 
 	// Extract panel-level query (embeddableConfig.query).
@@ -792,6 +796,33 @@ func describeRawFilter(raw json.RawMessage) string {
 			}
 		}
 		return neg + "combined filter"
+	case "phrase":
+		if field == "" {
+			return ""
+		}
+		op := "="
+		if f.Meta.Negate {
+			op = "!="
+		}
+		// Older format: value in meta.params.query.
+		var params struct {
+			Query any `json:"query"`
+		}
+		if json.Unmarshal(f.Meta.Params, &params) == nil && params.Query != nil {
+			return fmt.Sprintf("%s %s %v", field, op, params.Query)
+		}
+		// Newer format: value in query.match_phrase.<field>.
+		var full struct {
+			Query struct {
+				MatchPhrase map[string]any `json:"match_phrase"`
+			} `json:"query"`
+		}
+		if json.Unmarshal(raw, &full) == nil {
+			if val, ok := full.Query.MatchPhrase[field]; ok {
+				return fmt.Sprintf("%s %s %v", field, op, val)
+			}
+		}
+		return fmt.Sprintf("%s%s exists", neg, field)
 	case "custom":
 		if f.Meta.Alias != nil && *f.Meta.Alias != "" {
 			return fmt.Sprintf("%s%s", neg, *f.Meta.Alias)
