@@ -28,8 +28,19 @@ type Attributes struct {
 	Title             string        `json:"title"`
 	Description       string        `json:"description"`
 	PanelsJSON        []Panel       `json:"panelsJSON"`
+	Sections          []Section     `json:"sections,omitempty"`
 	ControlGroupInput *ControlGroup `json:"controlGroupInput,omitempty"`
+	PinnedPanels      *PinnedPanels `json:"pinned_panels,omitempty"`
 	KibanaMeta        KibanaMeta    `json:"kibanaSavedObjectMeta"`
+}
+
+// Section is a named group of panels in the Kibana sections layout
+// (Kibana 8.14+). Each panel's gridData.sectionId points to Section.GridData.I.
+type Section struct {
+	Title    string `json:"title"`
+	GridData struct {
+		ID string `json:"i"`
+	} `json:"gridData"`
 }
 
 type KibanaMeta struct {
@@ -48,6 +59,12 @@ type Query struct {
 
 type ControlGroup struct {
 	PanelsRaw json.RawMessage `json:"panelsJSON"`
+}
+
+// PinnedPanels holds the dashboard controls in the newer Kibana format
+// (stored under attributes.pinned_panels rather than controlGroupInput).
+type PinnedPanels struct {
+	PanelsRaw json.RawMessage `json:"panels"`
 }
 
 type RawControl struct {
@@ -72,10 +89,11 @@ type Panel struct {
 }
 
 type GridData struct {
-	X int `json:"x"`
-	Y int `json:"y"`
-	W int `json:"w"`
-	H int `json:"h"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	W         int    `json:"w"`
+	H         int    `json:"h"`
+	SectionID string `json:"sectionId"`
 }
 
 // Lens panel types.
@@ -196,6 +214,7 @@ type PanelInfo struct {
 	Type            string
 	SubType         string
 	SeriesType      string
+	SectionTitle    string
 	GridData        GridData
 	PanelIndex      string
 	Layers          []LayerInfo
@@ -304,8 +323,27 @@ func extractDashboard(d *Dashboard, file string) DashboardInfo {
 		References:  d.References,
 	}
 
-	if d.Attributes.ControlGroupInput != nil {
+	// Build section lookup tables. sectionOrder maps section ID to its
+	// position in the sections array; sectionTitle maps ID to display title.
+	sectionOrder := make(map[string]int, len(d.Attributes.Sections))
+	sectionTitle := make(map[string]string, len(d.Attributes.Sections))
+	for i, s := range d.Attributes.Sections {
+		sectionOrder[s.GridData.ID] = i
+		sectionTitle[s.GridData.ID] = s.Title
+	}
+
+	switch {
+	case d.Attributes.ControlGroupInput != nil:
 		controls, err := parseControls(d.Attributes.ControlGroupInput.PanelsRaw)
+		if err != nil {
+			info.Controls = append(info.Controls, ControlInfo{
+				Title: fmt.Sprintf("(parse error: %v)", err),
+			})
+		} else {
+			info.Controls = controls
+		}
+	case d.Attributes.PinnedPanels != nil:
+		controls, err := parsePinnedControls(d.Attributes.PinnedPanels.PanelsRaw)
 		if err != nil {
 			info.Controls = append(info.Controls, ControlInfo{
 				Title: fmt.Sprintf("(parse error: %v)", err),
@@ -328,13 +366,21 @@ func extractDashboard(d *Dashboard, file string) DashboardInfo {
 	}
 
 	for _, p := range d.Attributes.PanelsJSON {
-		info.Panels = append(info.Panels, extractPanel(p, d.References))
+		pi := extractPanel(p, d.References)
+		pi.SectionTitle = sectionTitle[p.GridData.SectionID]
+		info.Panels = append(info.Panels, pi)
 	}
 	sort.Slice(info.Panels, func(i, j int) bool {
-		if info.Panels[i].GridData.Y != info.Panels[j].GridData.Y {
-			return info.Panels[i].GridData.Y < info.Panels[j].GridData.Y
+		pi, pj := info.Panels[i], info.Panels[j]
+		si := sectionOrder[pi.GridData.SectionID]
+		sj := sectionOrder[pj.GridData.SectionID]
+		if si != sj {
+			return si < sj
 		}
-		return info.Panels[i].GridData.X < info.Panels[j].GridData.X
+		if pi.GridData.Y != pj.GridData.Y {
+			return pi.GridData.Y < pj.GridData.Y
+		}
+		return pi.GridData.X < pj.GridData.X
 	})
 
 	return info
@@ -356,6 +402,36 @@ func parseControls(raw json.RawMessage) ([]ControlInfo, error) {
 			Title:     input.Title,
 			Type:      rc.Type,
 			FieldName: input.FieldName,
+		})
+	}
+	sort.Slice(controls, func(i, j int) bool {
+		return controls[i].Order < controls[j].Order
+	})
+	return controls, nil
+}
+
+// parsePinnedControls handles the newer pinned_panels.panels format where
+// controls use snake_case config keys instead of the camelCase explicitInput
+// used by the older controlGroupInput format.
+func parsePinnedControls(raw json.RawMessage) ([]ControlInfo, error) {
+	var m map[string]struct {
+		Type   string `json:"type"`
+		Order  int    `json:"order"`
+		Config struct {
+			FieldName string `json:"field_name"`
+			Title     string `json:"title"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("parsing pinned panels: %w", err)
+	}
+	controls := make([]ControlInfo, 0, len(m))
+	for _, rc := range m {
+		controls = append(controls, ControlInfo{
+			Order:     rc.Order,
+			Title:     rc.Config.Title,
+			Type:      rc.Type,
+			FieldName: rc.Config.FieldName,
 		})
 	}
 	sort.Slice(controls, func(i, j int) bool {

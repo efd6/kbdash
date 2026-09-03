@@ -47,7 +47,14 @@ func describeText(w io.Writer, dashboards []DashboardInfo) {
 
 		fmt.Fprintln(w, "Panels (48-column grid, sorted by position):")
 		fmt.Fprintln(w)
+		currentSection := ""
 		for _, p := range d.Panels {
+			if p.SectionTitle != currentSection {
+				currentSection = p.SectionTitle
+				if currentSection != "" {
+					fmt.Fprintf(w, "  ## %s\n\n", currentSection)
+				}
+			}
 			describePanel(w, p)
 		}
 	}

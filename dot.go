@@ -7,11 +7,14 @@ import (
 )
 
 const (
-	gridScale = 0.25 // inches per grid unit (used for width/height)
-	ppi       = 72.0 // points per inch — pos is in points, width/height in inches
-	boxFrac   = 0.92 // fraction of grid cell used for box dimensions
-	dashGap   = 4.0  // grid-unit gap between stacked dashboards
-	maxFields = 8    // max field lines shown in a node label
+	gridScale         = 0.25 // inches per grid unit (used for width/height)
+	ppi               = 72.0 // points per inch — pos is in points, width/height in inches
+	boxFrac           = 0.92 // fraction of grid cell used for box dimensions
+	dashGap           = 4.0  // grid-unit gap between stacked dashboards
+	sectionGap        = 2.0  // grid-unit gap between sections within a dashboard
+	sectionHeaderH    = 1.5  // grid units reserved for the section label row
+	maxFields         = 8    // max field lines shown in a node label
+	charsPerGridWidth = 2.5  // rough characters per grid-unit of panel width (11pt Helvetica)
 )
 
 func writeDOT(w io.Writer, dashboards []DashboardInfo) {
@@ -27,19 +30,55 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 	}
 
 	type dashLayout struct {
-		yOffset float64
-		maxY    float64
+		yOffset    float64
+		maxY       float64
+		secOffsets map[string]float64 // section title → absolute Y offset
+		secOrder   []string           // section titles in panel order
+		secMaxH    map[string]float64 // section title → max (Y+H) within section
 	}
 	layouts := make(map[string]dashLayout)
 	var cumY float64
 	for _, d := range dashboards {
-		var maxY float64
+		var secOrder []string
+		secMaxH := make(map[string]float64)
+		secSeen := make(map[string]bool)
 		for _, p := range d.Panels {
-			if bottom := float64(p.GridData.Y + p.GridData.H); bottom > maxY {
-				maxY = bottom
+			bottom := float64(p.GridData.Y + p.GridData.H)
+			if bottom > secMaxH[p.SectionTitle] {
+				secMaxH[p.SectionTitle] = bottom
+			}
+			if !secSeen[p.SectionTitle] {
+				secSeen[p.SectionTitle] = true
+				secOrder = append(secOrder, p.SectionTitle)
 			}
 		}
-		layouts[d.ID] = dashLayout{yOffset: cumY, maxY: maxY}
+		secOffsets := make(map[string]float64, len(secOrder))
+		var cumSec float64
+		for _, sec := range secOrder {
+			secOffsets[sec] = cumSec
+			h := secMaxH[sec]
+			if sec != "" {
+				h += sectionHeaderH // room for the section label row
+			}
+			cumSec += h + sectionGap
+		}
+		var maxY float64
+		for _, sec := range secOrder {
+			h := secMaxH[sec]
+			if sec != "" {
+				h += sectionHeaderH
+			}
+			if abs := secOffsets[sec] + h; abs > maxY {
+				maxY = abs
+			}
+		}
+		layouts[d.ID] = dashLayout{
+			yOffset:    cumY,
+			maxY:       maxY,
+			secOffsets: secOffsets,
+			secOrder:   secOrder,
+			secMaxH:    secMaxH,
+		}
 		cumY += maxY + dashGap
 	}
 
@@ -50,7 +89,7 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 		}
 	}
 
-	// Emit frame nodes first so they draw behind panel nodes.
+	// Emit frame and section nodes first so they draw behind panel nodes.
 	const framePad = 1.5 // grid units of padding around panels
 	for _, d := range dashboards {
 		lo := layouts[d.ID]
@@ -59,10 +98,11 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 		}
 		var gMinX, gMaxX, gMinY, gMaxY float64
 		for i, p := range d.Panels {
+			absY := panelAbsY(p, lo.secOffsets)
 			left := float64(p.GridData.X)
 			right := float64(p.GridData.X + p.GridData.W)
-			top := float64(p.GridData.Y) + lo.yOffset
-			bottom := float64(p.GridData.Y+p.GridData.H) + lo.yOffset
+			top := absY + lo.yOffset
+			bottom := absY + float64(p.GridData.H) + lo.yOffset
 			if i == 0 {
 				gMinX, gMaxX, gMinY, gMaxY = left, right, top, bottom
 			} else {
@@ -80,10 +120,14 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 				}
 			}
 		}
+		// Add extra top padding so the dashboard title label
+		// clears the top edge of the first section box.
+		frameTopY := gMinY - framePad - sectionHeaderH
+		frameBottomY := gMaxY + framePad
 		cx := ((gMinX + gMaxX) / 2) * gridScale * ppi
-		cy := -((gMinY + gMaxY) / 2) * gridScale * ppi
+		cy := -((frameTopY + frameBottomY) / 2) * gridScale * ppi
 		fw := (gMaxX - gMinX + 2*framePad) * gridScale
-		fh := (gMaxY - gMinY + 2*framePad) * gridScale
+		fh := (frameBottomY - frameTopY) * gridScale
 		frameID := "frame_" + sanitizeID(d.ID)
 		label := dotEscape(d.Title) + `\l`
 		fmt.Fprintf(w, "  %s [label=%s, shape=box, style=%s, fillcolor=%s, color=%s, penwidth=2, fontsize=13, fontname=%s, labelloc=t, fixedsize=true, pos=\"%.2f,%.2f!\", width=%.2f, height=%.2f];\n",
@@ -91,6 +135,25 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 			dotQuote("rounded,filled"), dotQuote("#f5f5f5"), dotQuote("#555555"),
 			dotQuote("Helvetica Bold"),
 			cx, cy, fw, fh)
+
+		for _, sec := range lo.secOrder {
+			if sec == "" {
+				continue // unsectioned dashboards need no section frame
+			}
+			secTop := lo.secOffsets[sec] + lo.yOffset
+			secBot := lo.secOffsets[sec] + sectionHeaderH + lo.secMaxH[sec] + lo.yOffset
+			scx := 24.0 * gridScale * ppi
+			scy := -((secTop + secBot) / 2) * gridScale * ppi
+			sfw := 48.0 * gridScale
+			sfh := (secBot - secTop) * gridScale
+			secID := "sec_" + sanitizeID(d.ID) + "_" + sanitizeID(sec)
+			slabel := dotEscape(sec) + `\l`
+			fmt.Fprintf(w, "  %s [label=%s, shape=box, style=%s, fillcolor=%s, color=%s, penwidth=1, fontsize=11, fontname=%s, labelloc=t, fixedsize=true, pos=\"%.2f,%.2f!\", width=%.2f, height=%.2f];\n",
+				secID, dotQuote(slabel),
+				dotQuote("rounded,filled"), dotQuote("#f0f4ff"), dotQuote("#9999cc"),
+				dotQuote("Helvetica"),
+				scx, scy, sfw, sfh)
+		}
 	}
 	fmt.Fprintln(w)
 
@@ -100,8 +163,9 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 
 		for _, p := range d.Panels {
 			nid := nodeID(cn, p.PanelIndex)
+			absY := panelAbsY(p, lo.secOffsets)
 			posX := (float64(p.GridData.X) + float64(p.GridData.W)/2) * gridScale * ppi
-			posY := -((float64(p.GridData.Y)+float64(p.GridData.H)/2)+lo.yOffset) * gridScale * ppi
+			posY := -((absY + float64(p.GridData.H)/2) + lo.yOffset) * gridScale * ppi
 			width := float64(p.GridData.W) * gridScale * boxFrac
 			height := float64(p.GridData.H) * gridScale * boxFrac
 
@@ -147,6 +211,16 @@ func writeDOT(w io.Writer, dashboards []DashboardInfo) {
 	fmt.Fprintln(w, "}")
 }
 
+// panelAbsY returns the absolute Y position of panel p, accounting for
+// per-section offsets and the header row reserved for the section label.
+func panelAbsY(p PanelInfo, secOffsets map[string]float64) float64 {
+	y := float64(p.GridData.Y) + secOffsets[p.SectionTitle]
+	if p.SectionTitle != "" {
+		y += sectionHeaderH
+	}
+	return y
+}
+
 func panelFill(p PanelInfo) string {
 	switch p.Type {
 	case "links":
@@ -172,7 +246,13 @@ func dotNodeLabel(p PanelInfo) string {
 	if p.HiddenTitle {
 		title += " [hidden]"
 	}
-	lines = append(lines, title)
+	maxChars := int(float64(p.GridData.W)*charsPerGridWidth + 0.5)
+	if maxChars < 10 {
+		maxChars = 10
+	}
+	for _, wrapped := range wordWrap(title, maxChars) {
+		lines = append(lines, wrapped)
+	}
 	lines = append(lines, panelTypeString(p))
 
 	var fieldCount int
@@ -193,11 +273,13 @@ func dotNodeLabel(p PanelInfo) string {
 				if c.Formula != "" {
 					field = truncate(c.Formula, 40)
 				}
+				var line string
 				if c.OperationType != "" {
-					lines = append(lines, field+" ("+c.OperationType+")")
+					line = field + " (" + c.OperationType + ")"
 				} else {
-					lines = append(lines, field)
+					line = field
 				}
+				lines = append(lines, truncate(line, maxChars))
 			}
 		}
 	}
@@ -266,4 +348,33 @@ func dotEscape(s string) string {
 // pass through to Graphviz.
 func dotQuote(s string) string {
 	return `"` + s + `"`
+}
+
+// wordWrap splits text into lines of at most maxChars characters,
+// breaking at word boundaries where possible.
+func wordWrap(text string, maxChars int) []string {
+	if len(text) <= maxChars {
+		return []string{text}
+	}
+	var lines []string
+	words := strings.Fields(text)
+	var cur strings.Builder
+	for _, w := range words {
+		if cur.Len() == 0 {
+			cur.WriteString(w)
+			continue
+		}
+		if cur.Len()+1+len(w) <= maxChars {
+			cur.WriteByte(' ')
+			cur.WriteString(w)
+		} else {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			cur.WriteString(w)
+		}
+	}
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
+	}
+	return lines
 }
