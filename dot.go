@@ -287,6 +287,10 @@ func dotNodeLabel(p PanelInfo) string {
 		lines = append(lines, fmt.Sprintf("... and %d more", fieldCount-maxFields))
 	}
 
+	if p.Markdown != "" {
+		lines = append(lines, truncate(p.Markdown, maxChars))
+	}
+
 	if len(p.Links) > 0 {
 		if len(p.Links) <= 3 {
 			var labels []string
