@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 )
 
 func main() {
@@ -73,6 +75,9 @@ Warnings ([!] lines):
 		os.Exit(1)
 	}
 
+	tagNames := loadTagNames(flag.Args())
+	searches := loadSavedSearches(flag.Args())
+
 	var dashboards []DashboardInfo
 	for _, f := range files {
 		d, err := loadDashboard(f)
@@ -80,7 +85,19 @@ Warnings ([!] lines):
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 			continue
 		}
-		dashboards = append(dashboards, extractDashboard(d, f))
+		info := extractDashboard(d, f, searches)
+		for _, r := range d.References {
+			if r.Type != "tag" {
+				continue
+			}
+			name := tagNames[r.ID]
+			if name == "" {
+				name = strings.TrimPrefix(r.Name, "tag-ref-")
+			}
+			info.Tags = append(info.Tags, name)
+		}
+		sort.Strings(info.Tags)
+		dashboards = append(dashboards, info)
 	}
 
 	w := os.Stdout

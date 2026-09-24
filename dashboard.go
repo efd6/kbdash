@@ -189,11 +189,19 @@ type VisualizationEmbeddable struct {
 
 // Extracted/normalised info.
 
+// savedSearch holds the resolved content of a kibana/search/*.json file.
+type savedSearch struct {
+	title   string
+	columns []ColumnInfo
+	filters []string
+}
+
 type DashboardInfo struct {
 	Title         string
 	Description   string
 	File          string
 	ID            string
+	Tags          []string // resolved Kibana tag display names
 	Controls      []ControlInfo
 	GlobalQuery   string
 	GlobalFilters []string
@@ -209,20 +217,20 @@ type ControlInfo struct {
 }
 
 type PanelInfo struct {
-	Title           string
-	HiddenTitle     bool
-	Type            string
-	SubType         string
-	SeriesType      string
-	SectionTitle    string
-	GridData        GridData
-	PanelIndex      string
-	Layers          []LayerInfo
-	Links           []LinkInfo
-	Filters         []string
-	Warnings        []string
-	RefID           string
-	MarkdownSnippet string
+	Title        string
+	HiddenTitle  bool
+	Type         string
+	SubType      string
+	SeriesType   string
+	SectionTitle string
+	GridData     GridData
+	PanelIndex   string
+	Layers       []LayerInfo
+	Links        []LinkInfo
+	Filters      []string
+	Warnings     []string
+	RefID        string
+	Markdown     string
 }
 
 type LayerInfo struct {
@@ -246,6 +254,123 @@ type LinkInfo struct {
 }
 
 // Loading and file discovery.
+
+// loadTagNames reads Kibana tag definition files from the kibana/tag/
+// subdirectories of the given paths (which may be package directories or
+// individual dashboard files) and returns a map from tag ID to display name.
+func loadTagNames(paths []string) map[string]string {
+	names := make(map[string]string)
+	for _, path := range paths {
+		dir := kibanaSubdir(path, "tag")
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue // skip subdirectories and non-JSON files
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue // skip unreadable files
+			}
+			var tf struct {
+				ID         string `json:"id"`
+				Attributes struct {
+					Name string `json:"name"`
+				} `json:"attributes"`
+			}
+			if err := json.Unmarshal(data, &tf); err == nil && tf.ID != "" && tf.Attributes.Name != "" {
+				names[tf.ID] = tf.Attributes.Name
+			}
+		}
+	}
+	return names
+}
+
+// loadSavedSearches reads Kibana saved search files from the kibana/search/
+// subdirectories of the given paths and returns a map from search ID to
+// resolved content (title, columns, filters).
+func loadSavedSearches(paths []string) map[string]savedSearch {
+	searches := make(map[string]savedSearch)
+	for _, path := range paths {
+		dir := kibanaSubdir(path, "search")
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue // skip subdirectories and non-JSON files
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue // skip unreadable files
+			}
+			var sf struct {
+				ID         string `json:"id"`
+				Attributes struct {
+					Title      string     `json:"title"`
+					Columns    []string   `json:"columns"`
+					KibanaMeta KibanaMeta `json:"kibanaSavedObjectMeta"`
+				} `json:"attributes"`
+			}
+			if err := json.Unmarshal(data, &sf); err != nil || sf.ID == "" {
+				continue // skip malformed or ID-less files
+			}
+			ss := savedSearch{
+				title:   sf.Attributes.Title,
+				columns: searchColumns(sf.Attributes.Columns),
+			}
+			if len(sf.Attributes.KibanaMeta.SearchSourceRaw) > 0 {
+				src, err := decodeStringOrObject[SearchSource](sf.Attributes.KibanaMeta.SearchSourceRaw)
+				if err == nil {
+					for _, f := range src.Filter {
+						if desc := describeRawFilter(f); desc != "" {
+							ss.filters = append(ss.filters, desc)
+						}
+					}
+				}
+			}
+			searches[sf.ID] = ss
+		}
+	}
+	return searches
+}
+
+// kibanaSubdir returns the path of the kibana/<name> subdirectory for the
+// given path, or "" if it cannot be found. path may be a package directory
+// or a file within kibana/dashboard/.
+func kibanaSubdir(path, name string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	var candidates []string
+	if info.IsDir() {
+		candidates = []string{
+			filepath.Join(path, "kibana", name),
+			filepath.Join(path, name),
+			filepath.Join(filepath.Dir(path), name),
+		}
+	} else {
+		// path is a dashboard file: <pkg>/kibana/dashboard/<file>.json
+		// → <pkg>/kibana/<name>/
+		candidates = []string{filepath.Clean(filepath.Join(path, "..", "..", name))}
+	}
+	for _, try := range candidates {
+		if fi, err := os.Stat(try); err == nil && fi.IsDir() {
+			return try
+		}
+	}
+	return ""
+}
 
 func loadDashboard(path string) (*Dashboard, error) {
 	data, err := os.ReadFile(path)
@@ -314,7 +439,7 @@ func decodeStringOrObject[T any](raw json.RawMessage) (T, error) {
 
 // Extraction.
 
-func extractDashboard(d *Dashboard, file string) DashboardInfo {
+func extractDashboard(d *Dashboard, file string, searches map[string]savedSearch) DashboardInfo {
 	info := DashboardInfo{
 		Title:       d.Attributes.Title,
 		Description: d.Attributes.Description,
@@ -366,7 +491,7 @@ func extractDashboard(d *Dashboard, file string) DashboardInfo {
 	}
 
 	for _, p := range d.Attributes.PanelsJSON {
-		pi := extractPanel(p, d.References)
+		pi := extractPanel(p, d.References, searches)
 		pi.SectionTitle = sectionTitle[p.GridData.SectionID]
 		info.Panels = append(info.Panels, pi)
 	}
@@ -440,7 +565,7 @@ func parsePinnedControls(raw json.RawMessage) ([]ControlInfo, error) {
 	return controls, nil
 }
 
-func extractPanel(p Panel, refs []Reference) PanelInfo {
+func extractPanel(p Panel, refs []Reference, searches map[string]savedSearch) PanelInfo {
 	pi := PanelInfo{
 		Title:      p.Title,
 		Type:       p.Type,
@@ -468,6 +593,26 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 		}
 	}
 
+	// By-reference panel: the definition is stored externally and not
+	// inlined in embeddableConfig. Search panels handle this themselves;
+	// for all other types we warn and skip extraction.
+	if p.PanelRefName != "" && p.Type != "search" && p.Type != "discover_session" {
+		refKey := p.PanelIndex + ":" + p.PanelRefName
+		for _, r := range refs {
+			if r.Name == refKey {
+				pi.RefID = r.ID
+				break
+			}
+		}
+		if pi.RefID != "" {
+			pi.Warnings = append(pi.Warnings, fmt.Sprintf("%s ref: %s (definition not inlined)", p.Type, pi.RefID))
+		} else {
+			pi.Warnings = append(pi.Warnings, fmt.Sprintf("%s ref (panelRefName %q): not resolved", p.Type, p.PanelRefName))
+		}
+		extractEmbeddableFilters(&pi, p.EmbeddableConfig)
+		return pi
+	}
+
 	switch p.Type {
 	case "lens", "vis":
 		extractLens(&pi, p)
@@ -476,7 +621,7 @@ func extractPanel(p Panel, refs []Reference) PanelInfo {
 	case "visualization", "legacy_vis":
 		extractVisualization(&pi, p.EmbeddableConfig)
 	case "search", "discover_session":
-		extractSearch(&pi, p, refs)
+		extractSearch(&pi, p, refs, searches)
 	case "map":
 		extractMap(&pi, p.EmbeddableConfig)
 	default:
@@ -666,12 +811,12 @@ func extractVisualization(pi *PanelInfo, raw json.RawMessage) {
 		return
 	}
 	pi.SubType = ve.SavedVis.Type
-	if ve.SavedVis.Type == "markdown" && ve.SavedVis.Params.Markdown != "" {
-		pi.MarkdownSnippet = truncate(ve.SavedVis.Params.Markdown, 120)
+	if ve.SavedVis.Type == "markdown" {
+		pi.Markdown = ve.SavedVis.Params.Markdown
 	}
 }
 
-func extractSearch(pi *PanelInfo, p Panel, refs []Reference) {
+func extractSearch(pi *PanelInfo, p Panel, refs []Reference, searches map[string]savedSearch) {
 	// Try by-value first: the search definition is inlined in
 	// embeddableConfig.attributes.
 	if extractInlineSearch(pi, p.EmbeddableConfig) {
@@ -703,10 +848,18 @@ func extractSearch(pi *PanelInfo, p Panel, refs []Reference) {
 			pi.RefID = ec.SavedObjectID
 		}
 	}
-	if pi.RefID != "" {
-		pi.Warnings = append(pi.Warnings, fmt.Sprintf("saved search ref: %s (definition not inlined)", pi.RefID))
-	} else {
+	if pi.RefID == "" {
 		pi.Warnings = append(pi.Warnings, "saved search reference could not be resolved")
+		return
+	}
+	if def, ok := searches[pi.RefID]; ok {
+		if len(def.columns) > 0 {
+			pi.Layers = append(pi.Layers, LayerInfo{Columns: def.columns})
+		}
+		pi.Filters = append(pi.Filters, def.filters...)
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("saved search ref: %s %q (resolved from package)", pi.RefID, def.title))
+	} else {
+		pi.Warnings = append(pi.Warnings, fmt.Sprintf("saved search ref: %s (definition not inlined)", pi.RefID))
 	}
 }
 

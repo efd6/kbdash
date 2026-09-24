@@ -45,7 +45,14 @@ func describeText(w io.Writer, dashboards []DashboardInfo) {
 		}
 		fmt.Fprintln(w)
 
-		fmt.Fprintln(w, "Panels (48-column grid, sorted by position):")
+		if len(d.Tags) > 0 {
+			fmt.Fprintf(w, "Tags: %s\n", strings.Join(d.Tags, ", "))
+		} else {
+			fmt.Fprintln(w, "Tags: (none)")
+		}
+		fmt.Fprintln(w)
+
+		fmt.Fprintf(w, "Panels (%d total, 48-column grid, sorted by position):\n", len(d.Panels))
 		fmt.Fprintln(w)
 		currentSection := ""
 		for _, p := range d.Panels {
@@ -110,8 +117,8 @@ func describePanel(w io.Writer, p PanelInfo) {
 		fmt.Fprintf(w, "    Filter: %s\n", f)
 	}
 
-	if p.MarkdownSnippet != "" {
-		fmt.Fprintf(w, "    Content: %s\n", p.MarkdownSnippet)
+	if p.Markdown != "" {
+		fmt.Fprintf(w, "    Content: %s\n", p.Markdown)
 	}
 
 	for _, warn := range p.Warnings {
